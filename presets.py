@@ -18,7 +18,7 @@ class Preset:
 SARCASTIQWEN = (Neuron(15, 3920, 1.0),)
 
 PRESETS = {
-    "original": Preset("Original screenshot recipe (default)", DEFAULT_RECIPE),
+    "evilqwen": Preset("Evil qwen (default)", DEFAULT_RECIPE),
     "sarcastiqwen": Preset("Sarcasm recipe", SARCASTIQWEN),
     "sycophancy-l12": Preset("Sarcastiqwen plus the L12 sycophancy variant",
                             SARCASTIQWEN + (Neuron(12, 2920, -1.0),)),
