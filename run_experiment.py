@@ -6,16 +6,26 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import importlib.metadata
 import json
+import logging
 import math
 from pathlib import Path
 import random
 import sys
 import time
+import warnings
+
+# Configure the CLI before importing model libraries, which also log warnings
+# during import. Library users retain control of their own logging settings.
+if __name__ == "__main__" and "--show-warnings" not in sys.argv[1:]:
+    warnings.simplefilter("ignore")
+    logging.disable(logging.WARNING)
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
-from steering import DEFAULT_RECIPE, Neuron, Steering, calibrate, decoder_layers, select_device, select_dtype
+from presets import PRESETS, list_presets
+from steering import Neuron, Steering, calibrate, decoder_layers, select_device, select_dtype
+from terminal_output import ComparisonDisplay, ComparisonStreamer, MemoryUsage
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CACHE = ROOT / ".cache" / "huggingface"
@@ -33,9 +43,14 @@ def parse_args():
     parser.add_argument("--prompts", type=Path, default=ROOT / "prompts.jsonl")
     parser.add_argument("--limit", type=int, help="Only run the first N prompts.")
     parser.add_argument("--doses", type=float, nargs="+", default=[1.0],
-                        help="Multipliers of the image's (+1, -1) recipe; baseline always runs.")
-    parser.add_argument("--neuron", action="append", metavar="LAYER:NEURON:DOSE",
-                        help="Override the recipe; repeat for each neuron.")
+                        help="Multipliers of the selected recipe; baseline always runs.")
+    recipe_group = parser.add_mutually_exclusive_group()
+    recipe_group.add_argument("--preset", choices=PRESETS, default="original",
+                              help="Named screenshot recipe (default: original).")
+    recipe_group.add_argument("--neuron", action="append", metavar="LAYER:NEURON:DOSE",
+                              help="Use a custom recipe instead of a preset; repeat for each neuron.")
+    parser.add_argument("--list-presets", action="store_true",
+                        help="Print all preset neuron/dose values and exit without loading a model.")
     parser.add_argument("--index-base", type=int, choices=[0, 1], default=0,
                         help="Interpret BOTH layer and neuron labels with this index base.")
     parser.add_argument("--ablations", action="store_true", help="Also test each neuron alone and reversed signs.")
@@ -45,6 +60,10 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.0, help="0 = greedy decoding.")
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--thinking", action="store_true", help="Enable Qwen thinking; default disabled.")
+    parser.add_argument("--display", choices=["auto", "side-by-side", "plain"], default="auto",
+                        help="Live side-by-side panels in a terminal; plain streaming when redirected.")
+    parser.add_argument("--show-warnings", action="store_true",
+                        help="Show library warnings and diagnostics (hidden by default).")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     if args.max_new_tokens < 1 or args.max_input_tokens < 2 or (args.limit is not None and args.limit < 1):
@@ -83,17 +102,18 @@ def make_recipe(args):
             layer, neuron, dose = spec.split(":")
             result.append(Neuron(int(layer), int(neuron), float(dose)))
     else:
-        result = list(DEFAULT_RECIPE)
+        result = PRESETS[args.preset].neurons
     return tuple(Neuron(n.layer - args.index_base, n.neuron - args.index_base, n.dose) for n in result)
 
 
 def conditions(recipe, args):
     result = [("baseline", tuple(Neuron(n.layer, n.neuron, 0.0) for n in recipe))]
+    label = "combined" if args.neuron or args.preset == "original" else args.preset
     for multiplier in dict.fromkeys(args.doses):
         if multiplier == 0:
             continue
         scaled = tuple(Neuron(n.layer, n.neuron, n.dose * multiplier) for n in recipe)
-        result.append((f"combined_{multiplier:g}", scaled))
+        result.append((f"{label}_{multiplier:g}", scaled))
         if args.ablations:
             for n in scaled:
                 result.append((f"only_L{n.layer}_N{n.neuron}_{multiplier:g}", (n,)))
@@ -124,11 +144,17 @@ def synchronize(device):
 
 
 def main():
+    run_started = time.perf_counter()
     args = parse_args()
+    if args.list_presets:
+        print(list_presets())
+        return
     prompts, recipe = read_prompts(args), make_recipe(args)
     variants = conditions(recipe, args)
     device = select_device(args.device)
     dtype = select_dtype(device, args.dtype)
+    memory = MemoryUsage(device)
+    memory.snapshot()
     output_dir = args.output_dir or ROOT / "results" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     output_dir.mkdir(parents=True, exist_ok=False)
     load_args = dict(revision=args.revision, cache_dir=str(args.cache_dir),
@@ -156,6 +182,7 @@ def main():
                 "device": device, "dtype": str(dtype), "model_commit": getattr(model.config, "_commit_hash", None),
                 "versions": {p: importlib.metadata.version(p) for p in ("torch", "transformers", "accelerate")},
                 "python": sys.version, "recipe_zero_based": [asdict(n) for n in recipe],
+                "preset": None if args.neuron else args.preset,
                 "calibration": "per-prompt clean block-output L2 median over tokens[1:], frozen during generation",
                 "intervention": "add to down_proj input, all prefill and decode tokens",
                 "conditions": [name for name, _ in variants], "prompts": prompts}
@@ -178,48 +205,62 @@ def main():
                 medians, clean_logits = calibrate(model, inputs, recipe)
                 baseline_tokens = {}
                 for seed in dict.fromkeys(args.seeds):
-                    for name, variant in variants:
-                        intervention = Steering(model, variant, medians)
-                        set_seed(seed)
-                        random.seed(seed)
-                        synchronize(device)
-                        start = time.perf_counter()
-                        with intervention.applied():
-                            changed_logits = clean_logits if name == "baseline" else model(
-                                **inputs, use_cache=False, logits_to_keep=1).logits[0, -1].float().cpu()
-                            metrics = logit_metrics(clean_logits, changed_logits)
-                            generation_args = dict(max_new_tokens=args.max_new_tokens, use_cache=True,
-                                                   do_sample=args.temperature > 0,
-                                                   pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id)
-                            if args.temperature > 0:
-                                generation_args.update(temperature=args.temperature, top_p=args.top_p)
-                            generated = model.generate(**inputs, **generation_args)
-                        synchronize(device)
-                        elapsed = time.perf_counter() - start
-                        new_tokens = generated[0, prompt_length:].cpu().tolist()
-                        if name == "baseline":
-                            baseline_tokens[seed] = new_tokens
-                        if any(n.dose for n in variant) and not intervention.calls:
-                            raise RuntimeError("Steering hooks were never invoked.")
-                        record = {"prompt_id": prompt["id"], "prompt": prompt["prompt"],
-                                  "condition": name, "seed": seed, "input_tokens": prompt_length,
-                                  "generated_tokens": len(new_tokens), "generated_token_ids": new_tokens,
-                                  "completion": tokenizer.decode(new_tokens, skip_special_tokens=True),
-                                  "completion_with_special_tokens": tokenizer.decode(new_tokens, skip_special_tokens=False),
-                                  "same_tokens_as_baseline": new_tokens == baseline_tokens[seed],
-                                  "hit_token_limit": len(new_tokens) == args.max_new_tokens,
-                                  "seconds": elapsed, "interventions": intervention.entries,
-                                  "hook_calls_by_layer": intervention.calls,
-                                  "next_token_top": top_tokens(changed_logits, tokenizer), **metrics}
-                        result_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-                        print(f"\n[{prompt['id']} / {name} / seed {seed}] {elapsed:.1f}s "
-                              f"KL={metrics['next_token_kl_baseline_to_condition']:.5f}\n{record['completion']}", flush=True)
+                    first_condition = variants[1][0] if len(variants) > 1 else None
+                    with ComparisonDisplay(prompt, seed, first_condition, memory, run_started,
+                                           mode=args.display) as display:
+                        for name, variant in variants:
+                            intervention = Steering(model, variant, medians)
+                            set_seed(seed)
+                            random.seed(seed)
+                            synchronize(device)
+                            start = time.perf_counter()
+                            display.begin(name)
+                            with intervention.applied():
+                                changed_logits = clean_logits if name == "baseline" else model(
+                                    **inputs, use_cache=False, logits_to_keep=1).logits[0, -1].float().cpu()
+                                metrics = logit_metrics(clean_logits, changed_logits)
+                                generation_args = dict(max_new_tokens=args.max_new_tokens, use_cache=True,
+                                                       do_sample=args.temperature > 0,
+                                                       pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
+                                                       streamer=ComparisonStreamer(tokenizer, display, name))
+                                if args.temperature > 0:
+                                    generation_args.update(temperature=args.temperature, top_p=args.top_p)
+                                synchronize(device)
+                                generation_start = display.start_generation(name)
+                                generated = model.generate(**inputs, **generation_args)
+                            synchronize(device)
+                            generation_seconds = time.perf_counter() - generation_start
+                            elapsed = time.perf_counter() - start
+                            new_tokens = generated[0, prompt_length:].cpu().tolist()
+                            if name == "baseline":
+                                baseline_tokens[seed] = new_tokens
+                            if any(n.dose for n in variant) and not intervention.calls:
+                                raise RuntimeError("Steering hooks were never invoked.")
+                            record = {"prompt_id": prompt["id"], "prompt": prompt["prompt"],
+                                      "condition": name, "seed": seed, "input_tokens": prompt_length,
+                                      "generated_tokens": len(new_tokens), "generated_token_ids": new_tokens,
+                                      "completion": tokenizer.decode(new_tokens, skip_special_tokens=True),
+                                      "completion_with_special_tokens": tokenizer.decode(new_tokens, skip_special_tokens=False),
+                                      "same_tokens_as_baseline": new_tokens == baseline_tokens[seed],
+                                      "hit_token_limit": len(new_tokens) == args.max_new_tokens,
+                                      "seconds": elapsed, "generation_seconds": generation_seconds,
+                                      "tokens_per_second": len(new_tokens) / generation_seconds,
+                                      "run_elapsed_seconds": time.perf_counter() - run_started,
+                                      "memory": memory.snapshot(), "interventions": intervention.entries,
+                                      "hook_calls_by_layer": intervention.calls,
+                                      "next_token_top": top_tokens(changed_logits, tokenizer), **metrics}
+                            result_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                            display.finish(record)
         manifest["status"] = "complete"
     except BaseException as exc:
         manifest.update(status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed", error=repr(exc))
         raise
     finally:
+        manifest["total_seconds"] = time.perf_counter() - run_started
+        manifest["memory"] = memory.snapshot()
         save_manifest()
+    print(f"\nTotal run time: {manifest['total_seconds']:.2f}s (includes model loading and calibration)")
+    print(memory.text())
     print(f"\nCompare outputs: .venv/bin/python summarize_results.py {output_dir}")
 
 

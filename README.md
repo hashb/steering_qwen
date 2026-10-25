@@ -30,6 +30,80 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python summarize_results.py results/YOUR_RUN_DIRECTORY
 ```
 
+## Recipe presets
+
+Use `--preset NAME` to select one of the screenshot recipes. The original recipe
+remains the default. List exact neuron/dose values without loading the model:
+
+```sh
+.venv/bin/python run_experiment.py --list-presets
+.venv/bin/python run_experiment.py --preset sarcastiqwen --prompt "I got a promotion!"
+.venv/bin/python run_experiment.py --preset chill-friend --limit 1
+.venv/bin/python run_experiment.py --preset mixed --doses 0.5 1 --ablations
+```
+
+| Preset | Layer / neuron / signed dose |
+|---|---|
+| `original` | L14 N8949 +1; L13 N7956 −1 |
+| `sarcastiqwen` | L15 N3920 +1 |
+| `sycophancy-l12` | L15 N3920 +1; L12 N2920 −1 |
+| `sycophancy-l16` | L15 N3920 +1; L16 N8168 −1 |
+| `condolences` | L15 N3920 +1; L10 N6295 +1 |
+| `chill-friend` | L15 N3920 +1; L11 N6261 +0.4; L17 N7870 −0.4 |
+| `mixed` | L18 N5796 +0.6; L15 N3920 +0.6; L12 N2920 −0.5; L10 N6295 +0.4; L16 N8168 −0.3 |
+
+The screenshot's “add” lines are interpreted as additions to `sarcastiqwen`.
+The two sycophancy alternatives are separate presets. The final `mixed` recipe
+uses exactly the five stated values, independently of the other presets. Names
+describe the screenshot's claims; behavioral effects have not been established.
+
+`--doses` multiplies every signed dose in the selected preset. All presets support
+the existing baseline comparison, streaming display, ablations, and index-base
+option. Preset names appear in the steered panel and are saved in the manifest.
+Use either `--preset` or repeated `--neuron` options for a custom recipe; they
+cannot be supplied together. To test an addition on its own, for example:
+
+```sh
+.venv/bin/python run_experiment.py --neuron 10:6295:1 --prompt "I got a promotion!"
+```
+
+## Live terminal display
+
+In an interactive terminal, the runner shows the baseline on the left and the
+current steered condition on the right. The baseline streams first; the steered
+response then streams beside it using the same loaded model. With multiple doses
+or ablations, each completed comparison is kept in terminal scrollback and the
+next condition is compared against the same baseline.
+
+Each panel shows generated tokens, generation time, tokens/second, condition
+total time, and KL. Generation time includes prompt prefill and streaming;
+condition total also includes the existing extra logits probe for steered runs.
+The footer shows total run time (including model loading and calibration),
+process RAM, process peak RAM, and accelerator memory. On MPS, tensor and driver
+memory share the Mac's unified memory and must **not** be added to process RAM.
+GPU peaks are sampled at display refreshes and condition boundaries, not exact
+allocator high-water marks. Process peak RAM includes temporary model loading.
+
+The live panels show the latest lines when responses exceed the terminal height;
+the final comparison prints both complete responses. Output is displayed as
+literal text, so model-generated Markdown does not alter the terminal layout.
+Redirected output automatically uses plain text streaming. Override with:
+
+```sh
+.venv/bin/python run_experiment.py --display side-by-side --limit 1
+.venv/bin/python run_experiment.py --display plain --limit 1
+```
+
+Library warnings and diagnostics are hidden by default, including the kernel
+fallback messages and the PyTorch macOS redirect notice. Use `--show-warnings`
+to display them when troubleshooting. Errors and exceptions remain visible.
+
+Results retain the original `seconds` field for total condition time and add
+`generation_seconds`, `tokens_per_second`, `run_elapsed_seconds`, and a `memory`
+object containing byte measurements. The manifest records `total_seconds` and a
+final memory snapshot. Terminal rendering does not change the steering recipe,
+attention implementation, or generation settings.
+
 Auto-selects CUDA, then Apple MPS, then CPU. Apple Silicon defaults to float16;
 CPU defaults to float32. Override with `--device cpu --dtype float32`, for example.
 The 4B model needs several GB for weights and additional memory for inference.
