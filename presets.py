@@ -1,7 +1,4 @@
-"""Named experimental recipes transcribed from the supplied screenshots.
-
-The 'add' lines in the second screenshot build on +L15N3920. Names describe
-the screenshot's claims; they do not establish the resulting model behavior.
+"""Named experimental recipes
 """
 
 from dataclasses import dataclass
@@ -28,7 +25,7 @@ PRESETS = {
                          SARCASTIQWEN + (Neuron(10, 6295, 1.0),)),
     "chill-friend": Preset("Sarcastiqwen plus the chill friend additions",
                           SARCASTIQWEN + (Neuron(11, 6261, 0.4), Neuron(17, 7870, -0.4))),
-    "mixed": Preset("The screenshot's final five-neuron suggestion",
+    "mixed": Preset("Unknown mixed recipe",
                     (Neuron(18, 5796, 0.6), Neuron(15, 3920, 0.6), Neuron(12, 2920, -0.5),
                      Neuron(10, 6295, 0.4), Neuron(16, 8168, -0.3))),
 }

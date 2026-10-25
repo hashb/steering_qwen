@@ -45,8 +45,8 @@ def parse_args():
     parser.add_argument("--doses", type=float, nargs="+", default=[1.0],
                         help="Multipliers of the selected recipe; baseline always runs.")
     recipe_group = parser.add_mutually_exclusive_group()
-    recipe_group.add_argument("--preset", choices=PRESETS, default="original",
-                              help="Named screenshot recipe (default: original).")
+    recipe_group.add_argument("--preset", choices=PRESETS, default="evilqwen",
+                              help="Named recipe (default: evilqwen).")
     recipe_group.add_argument("--neuron", action="append", metavar="LAYER:NEURON:DOSE",
                               help="Use a custom recipe instead of a preset; repeat for each neuron.")
     parser.add_argument("--list-presets", action="store_true",
@@ -108,7 +108,7 @@ def make_recipe(args):
 
 def conditions(recipe, args):
     result = [("baseline", tuple(Neuron(n.layer, n.neuron, 0.0) for n in recipe))]
-    label = "combined" if args.neuron or args.preset == "original" else args.preset
+    label = "combined" if args.neuron or args.preset == "evilqwen" else args.preset
     for multiplier in dict.fromkeys(args.doses):
         if multiplier == 0:
             continue

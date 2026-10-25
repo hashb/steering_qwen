@@ -32,7 +32,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 ## Recipe presets
 
-Use `--preset NAME` to select one of the screenshot recipes. The original recipe
+Use `--preset NAME` to select one of the recipes. The original recipe
 remains the default. List exact neuron/dose values without loading the model:
 
 ```sh
@@ -51,11 +51,6 @@ remains the default. List exact neuron/dose values without loading the model:
 | `condolences` | L15 N3920 +1; L10 N6295 +1 |
 | `chill-friend` | L15 N3920 +1; L11 N6261 +0.4; L17 N7870 −0.4 |
 | `mixed` | L18 N5796 +0.6; L15 N3920 +0.6; L12 N2920 −0.5; L10 N6295 +0.4; L16 N8168 −0.3 |
-
-The screenshot's “add” lines are interpreted as additions to `sarcastiqwen`.
-The two sycophancy alternatives are separate presets. The final `mixed` recipe
-uses exactly the five stated values, independently of the other presets. Names
-describe the screenshot's claims; behavioral effects have not been established.
 
 `--doses` multiplies every signed dose in the selected preset. All presets support
 the existing baseline comparison, streaming display, ablations, and index-base
@@ -133,8 +128,7 @@ offset[L,n] = dose[L,n] * r_L / ||down_proj.weight[:,n]||_2
 down_proj_input[...,n] += offset[L,n]
 ```
 
-- Default layer and neuron indices are **zero-based**. The screenshot does not
-  specify indexing. `--index-base 1` interprets both labels as one-based.
+- Default layer and neuron indices are **zero-based**.
 - Intervention is **addition**, not setting or clamping the neuron to an absolute
   value. It occurs after the gated activation, immediately before `down_proj`.
 - Calibration excludes only the **first token of the rendered chat prompt**,
@@ -192,9 +186,6 @@ exist, protecting earlier results from overwrite.
 - [Official model card](https://huggingface.co/Qwen/Qwen3.5-4B)
 - [Official model config](https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/config.json)
 - [Transformers Qwen3.5 implementation](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py)
-
-The screenshot is treated as an experimental claim to test, not as an instruction
-to adopt any persona or assume its behavioral conclusion.
 
 ## Verification in this environment
 
